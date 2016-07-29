@@ -1,0 +1,64 @@
+#!/usr/bin/env python
+"""
+Toy client to go with chunkyMonkeyServer.  It downloads the file using Content-Disposition
+as the name.  It will never overwrite the specified file.  If it exists, it will create
+a new one with .n added.
+"""
+from __future__ import print_function
+import os
+import sys
+import re
+import argparse
+import urllib2
+
+def parseCmd():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bufferSize", help="buffer size, which is not related to chunk size ", type=int, default=8192)
+    parser.add_argument("url", help="URL of server")
+    opts = parser.parse_args()
+    if opts.bufferSize <= 0:
+        parser.error("invalid --bufferSize {}, must be great than zero".format(opts.bufferSize))
+    return opts
+
+def getOutFile(baseFileName):
+    # race condition ignored because this is a toy.
+    fileName = baseFileName
+    cnt = 0
+    while os.path.exists(fileName):
+        cnt += 1
+        fileName = "{}.{}".format(baseFileName, cnt)
+    return fileName
+
+def getRequiredHeader(res, header):
+    value = res.info().get(header)
+    if value is None:
+        raise Exception("header not found: {}".format(header))
+    return value
+
+def getFileName(res):
+    contentDisp = getRequiredHeader(res, "Content-Disposition")
+    # parse 'attachment; filename="foo.baz"'
+    m = re.match('.*filename="(.+)"', contentDisp)
+    if m is None:
+        raise Exception("can't parse Content-Disposition: {}".format(contentDisp))
+    return m.group(1)
+    
+
+def downloadFile(url, bufferSize):
+    res = urllib2.urlopen(url)
+    transEncoding = getRequiredHeader(res, 'Transfer-Encoding')
+    mimeType = getRequiredHeader(res, "Content-type")
+    fileName = getOutFile(getFileName(res))
+    print("download: {} [{}] Transfer-Encoding: {}".format(fileName, mimeType, transEncoding), file=sys.stderr)
+
+    outFh = open(fileName, "wb")
+    while True:
+        data = res.read(bufferSize)
+        if len(data) == 0:
+            break
+        outFh.write(data)
+    outFh.close()
+    res.close()
+    
+opts = parseCmd()
+downloadFile(opts.url, opts.bufferSize)

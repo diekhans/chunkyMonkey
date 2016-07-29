@@ -1,0 +1,88 @@
+#!/usr/bin/env python
+"""
+Toy server that servers up a single file using HTTP chunked transfer
+encoding.
+"""
+from __future__ import print_function
+import os
+import argparse
+import BaseHTTPServer
+import SocketServer
+
+def parseCmd():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--public", help="Listen on an Internet interfaces instead of localhost", action="store_true")
+    parser.add_argument("--mimeType", help="MIME type to use", default="text/plain")
+    parser.add_argument("--chunkSize", help="size of chunk to send, in bytes", type=int, default=1024)
+    parser.add_argument("port", help="server port",type=int)
+    parser.add_argument("srcFile", help="file to server")
+    opts = parser.parse_args()
+    if opts.chunkSize <= 0:
+        parser.error("invalid --chunkSize {}, must be great than zero".format(opts.chunkSize))
+    if not os.path.exists(opts.srcFile):
+        parser.error("file not found: {}".format(opts.srcFile))
+    return opts
+
+class ChunkingRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler,
+                             object):
+    """handler for requests, always returns the same file with the requested
+    chunk size"""
+    # note: BaseHTTPRequestHandler is still an old-style class, hence need to explicitly extend `object'
+
+    protocol_version = 'HTTP/1.1'
+
+    def __write_chunk(self, chunk):
+        self.wfile.write("{0:x}\r\n".format(len(chunk)))
+        self.wfile.write(chunk)
+        self.wfile.write("\r\n")
+        
+    def __write_chunks(self, srcFh):
+        chunk = srcFh.read(self.server.chunkSize)
+        while len(chunk) > 0:
+            self.__write_chunk(chunk)
+            chunk = srcFh.read(self.server.chunkSize)
+        
+    def __do_get(self, srcFh):
+        # send headers
+        self.send_response(200)
+        self.send_header('Transfer-Encoding', 'chunked')
+        self.send_header('Content-type', self.server.mimeType)
+        self.send_header('Content-Disposition', 'attachment; filename="{}"'.format(os.path.basename(self.server.srcFile)))
+        self.end_headers()
+
+        self.__write_chunks(srcFh)
+        
+        # send the chunked success trailer
+        self.wfile.write('0\r\n\r\n')
+
+    def do_GET(self):
+        with open(self.server.srcFile, "rb") as srcFh:
+            self.__do_get(srcFh)
+
+class ChunkToyServer(SocketServer.ThreadingMixIn,
+                     BaseHTTPServer.HTTPServer,
+                     object):
+    """
+    Toy server to show how chunked encoding works.  Approach
+    borrowed from https://gist.github.com/josiahcarlson/3250376
+    """
+    # note: ThreadingMixIn is still an old-style class, hence need to explicitly extend `object'
+
+    daemon_threads = True
+
+    def __init__(self, server_address, chunkSize, srcFile, mimeType):
+        super(ChunkToyServer, self).__init__(server_address, ChunkingRequestHandler)
+        self.chunkSize = chunkSize
+        self.srcFile = srcFile
+        self.mimeType = mimeType
+
+def startServer(isPublic, port, chunkSize, srcFile, mimeType):
+    addr = ('' if isPublic else "127.0.0.1", port)
+    server = ChunkToyServer(addr, chunkSize=chunkSize, srcFile=srcFile, mimeType=mimeType)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass # don't generate error message on ^C
+
+opts = parseCmd()
+startServer(opts.public, opts.port, opts.chunkSize, opts.srcFile, opts.mimeType)
